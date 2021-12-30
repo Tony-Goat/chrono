@@ -252,3 +252,73 @@ fn gmtime_rs(t: &Time, tm: &mut Tm) -> bool {
 
     return false;
 }
+
+/* The FreeDesktop specification identifies that the timezone should be parsed
+ * from a file link at /etc/localtime
+ * https://www.freedesktop.org/software/systemd/man/localtime.html
+ * The file that is there shall be in the tzfile format and parsed as such
+ * https://man7.org/linux/man-pages/man5/tzfile.5.html
+ * Should there be no /etc/localtime file or should the file be an invalid
+ * format, the timezone shall be UTC
+ */
+#[cfg(target_os = "linux")]
+use std::fs;
+enum TZifVersion {
+    Version1,
+    Version2,
+    Version3
+};
+
+fn utc_to_local_offset(tm: &mut Tm) {
+    let timezone_path = match fs::read_link("/etc/localtime") {
+        Err(e) => return,
+        Ok(tp) => tp
+    };
+
+    let timezone_file = match fs::open(timezone_path) {
+        Err(_) => return,
+        Ok(tf) => tf
+    };
+
+    let mut timezone_reader = io::BufReader::new(timezone_file);
+
+    //Read in and verify the header
+    let mut header_magic: [u8; 5] = [0; 5];
+    match timezone_reader.read(&mut header_magic) {
+        Err(_) => return,
+        Ok(num) => if num != 5 { return; }
+    }
+
+    //Make sure the magic is in the air
+    if header_magic[..4] != [0x54, 0x5A, 0x69, 0x66] {
+        return;
+    }
+
+    //Make sure we have a valid version
+    let version = match header_magic[4] {
+        0x00 => TZifVersion::Version1,
+        0x32 => TZifVersion::Version2,
+        0x33 => TZifVersion::Version3,
+        _ => return
+    };
+
+    //Consume 15 and discard 15 bytes
+    let mut reserved: [u8; 15] = [0; 15];
+    match timezone_reader.read(&mut reserved) {
+        Err(_) => return,
+        Ok(num) => if num != 15 { return; }
+    }
+
+    //For all three versions, we read in and process the 32 bit headers
+    let mut bit_buffer: [u8; 4] = [0; 4];
+    let mut file_information_32b: [u32; 6] = [0; 6];
+
+    for i in 0..6 {
+        match timezone_reader.read(&mut bit_buffer) {
+            Err(_) => return,
+            Ok(num) => if num != 4 { return; }
+        }
+        file_information_32b[i] = u32::from_ne_bytes(bit_buffer);
+    }
+
+}
