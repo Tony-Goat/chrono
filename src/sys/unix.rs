@@ -267,7 +267,7 @@ enum TZifVersion {
     Version1,
     Version2,
     Version3
-};
+}
 
 fn utc_to_local_offset(tm: &mut Tm) {
     let timezone_path = match fs::read_link("/etc/localtime") {
@@ -310,15 +310,65 @@ fn utc_to_local_offset(tm: &mut Tm) {
     }
 
     //For all three versions, we read in and process the 32 bit headers
-    let mut bit_buffer: [u8; 4] = [0; 4];
+    let mut word_buffer: [u8; 4] = [0; 4];
+    let mut byte_buffer: [u8; 1] = [0; 1];
     let mut file_information_32b: [u32; 6] = [0; 6];
 
+    //typecnt MUST NOT BE ZERO
+    if file_information_32b[4] == 0 {
+        return;
+    }
+
     for i in 0..6 {
-        match timezone_reader.read(&mut bit_buffer) {
+        match timezone_reader.read(&mut word_buffer) {
             Err(_) => return,
             Ok(num) => if num != 4 { return; }
         }
-        file_information_32b[i] = u32::from_ne_bytes(bit_buffer);
+        file_information_32b[i] = u32::from_ne_bytes(word_buffer);
+    }
+
+    match version {
+        TZifVersion::Version1 => {
+            //Pull out the 32 bit transition times
+            let mut transition_times_32b: Vec<u32> = Vec::new();
+            for _ in 0..file_information_32b[3] {
+                match timezone_reader.read(&mut word_buffer) {
+                    Err(_) => return,
+                    Ok(num) => if num != 4 { return; }
+                }
+                transition_times_32b.push(u32::from_ne_bytes(word_buffer));
+            }
+
+            //Pull out the indexes
+            let mut transition_times_indexes_32b: Vec<u8> = Vec::new();
+            for _ in 0..file_information_32b[3] {
+                match timezone_reader.read(&mut byte_buffer) {
+                    Err(_) => return,
+                    Ok(num) => if num != 1 { return; }
+                }
+                transition_times_indexes_32b.push(byte_buffer[0]);
+            }
+        }
+        TZifVersion::Version2 | TZifVersion::Version3 => {
+            //Fast forward beyond the 32bit data to the 64bit data
+            let mut fast_forward =
+                file_information_32b[0] + //isutccnt counts out 1 byte values
+                file_information_32b[1] + //isstdcnt counts out 1 byte values
+                file_information_32b[2] * 8 + //leapcnt counts out 8 byte values
+                file_information_32b[3] * 5 +//timecnt counts out 4 byte + 1 byte values
+                file_information_32b[4] * 6 + //typecnt counts out 6 byte records
+                file_information_32b[5]; //charcnt counts out 1 byte records
+
+            for _ in 0..fast_forward {
+                match timezone_reader.read(&mut byte_buffer) {
+                    Err(_) => return,
+                    Ok(num) => if num != 1 { return; }
+                }
+            }
+
+            //Now we should be at the 64bit headers
+
+        }
     }
 
 }
